@@ -63,9 +63,12 @@ first-time-right on the tested path.
 
 ## Skills (entry points)
 
-These are the entry points. They are Hermes skills living under `harness/skills/`. Each is
-also documented as a slash-command-style entry in `.hermes.md` so a chat session can invoke
-them by name. The skill file is the source of truth.
+These are the entry points. Each is a self-contained procedure in `harness/skills/<name>/SKILL.md`
+— the **source of truth**. They are **repo artifacts, not installed Hermes skills**, so they do
+**not** auto-dispatch as native `/zero-shot-build` slash commands out of the box. To run one, an
+agentic session working in this repo **reads the SKILL.md and follows it** (the harness context in
+this file + `.hermes.md` already points at them). For a literal typed `/zero-shot-build` slash
+command via the registry, install the skill into `~/.hermes/skills/` (optional — see note below).
 
 | Skill | Purpose |
 |-------|---------|
@@ -73,10 +76,15 @@ them by name. The skill file is the source of truth.
 | `zero-shot-fix [target]` | Diagnose + fix a bug, error, failing test, or spec/code drift, then verify. |
 | `zero-shot-sync [scope]` | Reconcile spec ↔ code so they match (spec wins), then verify. |
 
-**How they map to Hermes mechanics:**
+**How to invoke (in a session whose cwd is inside this repo):**
 
-- **Slash command** — typed in a Hermes chat session (e.g. `/zero-shot-build an agent that ...`).
-- **Direct load** — `skill_view(name="...")` or the skill file path `harness/skills/<name>/SKILL.md`.
+- **Read + follow the file** (default, no install needed) — open `harness/skills/<name>/SKILL.md`
+  and execute its procedure. The agent already has this file in context via the harness.
+- **Direct skill load** — `skill_view(name="<path>")` pointing at the SKILL.md, or
+  `hermes -s <name>` if installed.
+- **Optional native slash command** — copy `harness/skills/<name>/` into
+  `~/.hermes/skills/<name>/` so `/zero-shot-build` resolves through the Hermes registry and
+  `hermes skills list` shows it. This is convenience/portability only; the build works without it.
 - **Intake questions** — use the `clarify` tool with `choices` (max 4) for multi-select product
   rounds; for free-text idea capture, ask an open-ended `clarify` question and WAIT for the reply.
 - **Sub-agents (the team)** — spawned via Hermes `delegate_task` (or `agent` tool in the agent
