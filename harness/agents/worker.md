@@ -1,4 +1,4 @@
-# qa-auditor
+# worker
 
 Placeholder agent role.
 

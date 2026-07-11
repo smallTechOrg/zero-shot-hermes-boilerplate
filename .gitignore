@@ -27,3 +27,9 @@ data/
 # Logs / OS
 *.log
 .DS_Store
+
+# Flattened boilerplate build artifacts
+backend/.venv/
+frontend/dist/
+*.db
+data/

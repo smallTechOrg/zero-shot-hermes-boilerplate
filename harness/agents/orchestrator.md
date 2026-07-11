@@ -1,4 +1,4 @@
-# qa-auditor
+# orchestrator
 
 Placeholder agent role.
 

@@ -1,0 +1,9 @@
+FROM node:20-slim AS build
+WORKDIR /app
+COPY package.json pnpm-lock.yaml* ./
+RUN npm install
+COPY . .
+RUN npm run build
+
+# production stage reuses node to serve via `npm run preview` or copy dist to nginx
+CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0", "--port", "5173"]
