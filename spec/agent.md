@@ -1,10 +1,10 @@
 # Agent — `scaffold-agent`
 
-> Phase 1 keeps the agent surface intentionally tiny. Phase 2 replaces the inner node with a real LangGraph graph.
+> Phase 1 shipped the agent stub. Phase 2 replaces `/api/chat` with a compact multi-agent supervisor graph plus run persistence.
 
 ---
 
-## Agent Architecture Pattern
+
 
 **Chosen:** Multi-agent supervisor by default, with ReAct worker nodes.
 
@@ -69,13 +69,13 @@ class AgentState(TypedDict):
 
 ## Graph / Flow Topology
 
-```
-START → agent_node → END
-  │
-  └─(error)→ handle_error → END
+```text
+START -> supervisor -> worker -> END
+                   |-> reply -> END
+                   |-> error -> handle_error -> END
 ```
 
-Phase 2 introduces LangGraph with this ASCII skeleton ready to wire into the backend.
+The backend now emits a supervisor graph in `app/graph.py`, a worker node in `app/nodes/*`, and a single entrypoint in `app/agent.py`. `/api/chat` invokes the graph and persists a `Run` record on completion or failure.
 
 ## Memory & Context
 

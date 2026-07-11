@@ -286,9 +286,11 @@ class Run(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     status = Column(String(32), nullable=False, default="succeeded")
+    agent_id = Column(String(128), nullable=True)
     user_message = Column(Text, nullable=False)
     assistant_message = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
+    trace = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 """
 
@@ -319,9 +321,12 @@ async def health():
 def _backend_chat_router() -> str:
     return """from fastapi import APIRouter
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.agent import run_agent
+from app.agent import run_graph
+from app.db import SessionLocal
+from app.models import Run
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -337,47 +342,189 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+    run_id: int | None = None
 
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    assistant = await run_agent(req.messages[-1].content)
-    return ChatResponse(reply=assistant)
+    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    reply, error = await run_graph(messages)
+    run_id = None
+    db: Session = SessionLocal()
+    try:
+        run = Run(
+            status="error" if error else "succeeded",
+            user_message=req.messages[-1].content,
+            assistant_message=reply,
+            error_message=error,
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        run_id = run.id
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+    return ChatResponse(reply=reply or "Something went wrong.", run_id=run_id)
+
+
+class RunResponse(BaseModel):
+    id: int
+    status: str
+    user_message: str
+    assistant_message: str | None
+    error_message: str | None
+    created_at: str
+
+
+class RunListResponse(BaseModel):
+    runs: list[RunResponse]
+
+
+@router.get("/runs", response_model=RunListResponse)
+async def list_runs():
+    db: Session = SessionLocal()
+    try:
+        runs = db.query(Run).order_by(Run.id.desc()).limit(50).all()
+        return RunListResponse(
+            runs=[
+                RunResponse(
+                    id=run.id,
+                    status=run.status,
+                    user_message=run.user_message,
+                    assistant_message=run.assistant_message,
+                    error_message=run.error_message,
+                    created_at=run.created_at.isoformat() if run.created_at else "",
+                )
+                for run in runs
+            ]
+        )
+    finally:
+        db.close()
+
+
+@router.get("/runs/{run_id}", response_model=RunResponse)
+async def get_run(run_id: int):
+    db: Session = SessionLocal()
+    try:
+        run = db.query(Run).filter(Run.id == run_id).first()
+        if not run:
+            return RunResponse(
+                id=run_id,
+                status="not_found",
+                user_message="",
+                assistant_message=None,
+                error_message="Run not found",
+                created_at="",
+            )
+        return RunResponse(
+            id=run.id,
+            status=run.status,
+            user_message=run.user_message,
+            assistant_message=run.assistant_message,
+            error_message=run.error_message,
+            created_at=run.created_at.isoformat() if run.created_at else "",
+        )
+    finally:
+        db.close()
 """
 
 
 def _backend_agent() -> str:
-    return """import httpx
+    return """from __future__ import annotations
+
+from typing import Any
+
 from app.config import settings
 
 
-async def run_agent(user_message: str) -> str:
-    if not settings.LLM_API_KEY or not settings.LLM_BASE_URL:
-        return f"[stub] Echo: {user_message}"
+class AgentState(dict):
+    run_id: int | None
+    messages: list[dict[str, str]]
+    reply: str | None
+    error: str | None
 
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            payload = {
-                "model": settings.LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": user_message},
-                ],
-            }
-            headers = {
-                "Authorization": f"Bearer {settings.LLM_API_KEY}",
-                "Content-Type": "application/json",
-            }
-            resp = await client.post(
-                f"{settings.LLM_BASE_URL.rstrip('/')}/v1/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-    except Exception as exc:
-        return f"[stub] LLM call failed: {exc}"
+
+async def _supervisor(state: AgentState) -> AgentState:
+    last = state["messages"][-1]["content"] if state["messages"] else ""
+    state.setdefault("route", "worker")
+    state.setdefault("decision", "answer")
+    state.setdefault("reason", "default-worker")
+    state["last_user_message"] = last
+    return state
+
+
+async def _worker(state: AgentState) -> AgentState:
+    last = state.get("last_user_message", "")
+    if settings.LLM_API_KEY and settings.LLM_BASE_URL:
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                payload = {
+                    "model": settings.LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": last},
+                    ],
+                }
+                headers = {
+                    "Authorization": f"Bearer {settings.LLM_API_KEY}",
+                    "Content-Type": "application/json",
+                }
+                resp = await client.post(
+                    f"{settings.LLM_BASE_URL.rstrip('/')}/v1/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                state["reply"] = data["choices"][0]["message"]["content"]
+                return state
+        except Exception as exc:
+            state["error"] = f"llm:{exc}"
+            return state
+
+    state["reply"] = f"[stub] {last}"
+    return state
+
+
+async def _handle_error(state: AgentState) -> AgentState:
+    state.setdefault("reply", "Something went wrong.")
+    if state.get("error"):
+        state["reply"] = f\"Something went wrong: {state['error']}\"
+    return state
+
+
+NODES = {
+    "supervisor": _supervisor,
+    "worker": _worker,
+    "handle_error": _handle_error,
+}
+
+
+async def run_graph(messages: list[dict[str, str]]) -> tuple[str, str | None]:
+    state: AgentState = {
+        "run_id": None,
+        "messages": messages,
+        "reply": None,
+        "error": None,
+        "route": "worker",
+        "decision": "answer",
+        "reason": "default",
+    }
+
+    state = await _supervisor(state)
+    if state.get("error"):
+        state = await _handle_error(state)
+        return state["reply"], state.get("error")
+
+    state = await _worker(state)
+    if state.get("error"):
+        state = await _handle_error(state)
+
+    return state["reply"], state.get("error")
 """
 
 
