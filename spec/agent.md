@@ -6,11 +6,48 @@
 
 
 
-**Chosen:** Multi-agent supervisor by default, with ReAct worker nodes.
+**Chosen:** Multi-agent supervisor by default, with ReAct worker nodes, plus a lightweight goal loop for autonomous multi-step runs.
 
-Rationale: A supervisor graph is the strongest June-2026 starting point. It handles trivial single-node tasks without overhead and scales to specialist workers without changing the outer API contract. The scaffold ships a minimal supervisor with a single worker in Phase 1, and later phases can add specialist workers, planning, reflection, MCP/A2A transport, and optional Expo mobile clients without changing the backend interface.
+## Goal Loop
 
-## LLM Provider & Model
+The generated harness supports optional goal-based looping so Hermes or similar automation can drive the agent through multiple steps without manual intervention.
+
+### State shape
+
+```python
+class GoalState(TypedDict):
+    goal_id: int
+    run_id: int
+    goal_text: str
+    status: str
+    step_index: int
+    steps: list[dict]
+    last_reply: str | None
+    last_error: str | None
+```
+
+Loop rules:
+- `pending` → `running` → `succeeded` / `failed`
+- A step may finish with `intermediate` to continue the loop
+- `next_step` advances once per successful iteration
+- Hard stop on `failed` or terminal `succeeded`
+
+### Endpoints
+
+- `POST /goals` create a goal with initial step list
+- `POST /goals/{goal_id}/next` advance one step
+- `POST /goals/{goal_id}/run` run loop until termination
+- `GET /goals/{goal_id}` current goal state
+
+### Persistence
+
+Goals and step receipts are stored in `app/models.py` and materialized by `app/db.py` on startup.
+
+## Supervisor
+
+The backend emits a supervisor graph in `app/agent.py`:
+- START -> supervisor -> worker -> END
+- worker may return reply, error, or a follow-up step
 
 | Node | Provider | Model ID | Rationale |
 |-------|----------|----------|-----------|

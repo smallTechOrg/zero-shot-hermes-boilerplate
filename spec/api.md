@@ -98,3 +98,70 @@ When `LLM_API_KEY` is present and `LLM_BASE_URL` is set, the backend still route
 - Auth is disabled in Phase 1; CORS is open for local dev. Production deploy should set CORS origins.
 - Persistence now uses SQLAlchemy via `app/db.py`; no external queue is required for the baseline scaffold.
 - Streaming remains a Phase 3 enhancement.
+
+## Goal Loop Endpoints
+
+### `POST /goals`
+
+**Purpose:** Create a new goal with an ordered step list.
+
+**Request:**
+```json
+{
+  "goal_text": "Deploy demo-agent to GCP",
+  "steps": [
+    {"description": "Build backend Docker image"},
+    {"description": "Build frontend Docker image"},
+    {"description": "Push to GCR"},
+    {"description": "Deploy on GCE"}
+  ]
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "goal_id": 1,
+  "status": "pending"
+}
+```
+
+### `POST /goals/{goal_id}/next`
+
+**Purpose:** Advance one step for the goal and return the result.
+
+**Response (200 OK):**
+```json
+{
+  "goal_id": 1,
+  "status": "running",
+  "step_index": 1,
+  "step": {"description": "Build backend Docker image"},
+  "reply": "Build complete",
+  "error": null
+}
+```
+
+### `POST /goals/{goal_id}/run`
+
+**Purpose:** Run the remaining goal steps in loop until terminal state.
+
+**Response (200 OK):**
+```json
+{
+  "goal_id": 1,
+  "status": "succeeded",
+  "step_index": 4,
+  "reply": "Deployed to GCP"
+}
+```
+
+Loop rules:
+- Current step is executed
+- If worker returns `intermediate`, the loop continues with the next step
+- If worker returns `succeeded` or `failed`, the loop stops
+- If worker returns `intermediate` and no next step exists, status becomes `succeeded`
+
+### `GET /goals/{goal_id}`
+
+**Purpose:** Inspect current goal state.

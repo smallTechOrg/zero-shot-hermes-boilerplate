@@ -203,7 +203,7 @@ def _backend_main_py() -> str:
     return """from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import health, chat
+from app.routers import health, chat, goal
 from app.config import settings
 
 # Import db so dev-time create_all runs on startup/TestClient import.
@@ -223,6 +223,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(goal.router)
 
     @app.get("/")
     async def root():
@@ -305,7 +306,22 @@ class Run(Base):
     error_message = Column(Text, nullable=True)
     trace = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Goal(Base):
+    __tablename__ = "goals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    goal_text = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    steps = Column(Text, nullable=False, default="[]")  # JSON list of {description}
+    step_index = Column(Integer, nullable=False, default=0)
+    last_reply = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
+    run_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 """
+
 
 
 def _backend_init() -> str:
@@ -441,6 +457,142 @@ async def get_run(run_id: int):
             assistant_message=run.assistant_message,
             error_message=run.error_message,
             created_at=run.created_at.isoformat() if run.created_at else "",
+        )
+    finally:
+        db.close()
+"""
+
+
+def _backend_goal_router() -> str:
+    return """from fastapi import APIRouter
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+import json
+
+from app.db import SessionLocal
+from app.models import Goal
+from app.agent import run_graph
+
+router = APIRouter(prefix="/goals", tags=["goals"])
+
+
+class Step(BaseModel):
+    description: str
+
+
+class GoalRequest(BaseModel):
+    goal_text: str
+    steps: list[Step] = Field(default_factory=list)
+
+
+class GoalResponse(BaseModel):
+    goal_id: int
+    status: str
+    step_index: int = 0
+    step: dict | None = None
+    reply: str | None = None
+    error: str | None = None
+
+
+async def _execute_step(goal: Goal, db: Session) -> None:
+    steps = json.loads(goal.steps)
+    if goal.step_index >= len(steps):
+        return
+    step = steps[goal.step_index]
+    reply, error = await run_graph([{"role": "user", "content": step["description"]}])
+    goal.step_index += 1
+    goal.last_reply = reply
+    goal.last_error = error
+    if error:
+        goal.status = "failed"
+    elif goal.step_index >= len(steps):
+        goal.status = "succeeded"
+    else:
+        goal.status = "running"
+    db.add(goal)
+    db.commit()
+
+
+@router.post("", response_model=GoalResponse)
+async def create_goal(req: GoalRequest):
+    db: Session = SessionLocal()
+    try:
+        goal = Goal(
+            goal_text=req.goal_text,
+            steps=json.dumps([s.model_dump() for s in req.steps]),
+            status="pending",
+        )
+        db.add(goal)
+        db.commit()
+        db.refresh(goal)
+        return GoalResponse(goal_id=goal.id, status=goal.status)
+    finally:
+        db.close()
+
+
+@router.post("/{goal_id}/next", response_model=GoalResponse)
+async def next_step(goal_id: int):
+    db: Session = SessionLocal()
+    try:
+        goal = db.query(Goal).filter(Goal.id == goal_id).first()
+        if not goal:
+            return GoalResponse(goal_id=goal_id, status="not_found")
+        steps = json.loads(goal.steps)
+        if goal.step_index >= len(steps):
+            goal.status = "succeeded"
+            db.commit()
+            return GoalResponse(goal_id=goal_id, status="succeeded")
+        await _execute_step(goal, db)
+        step = steps[goal.step_index - 1] if goal.step_index > 0 else None
+        return GoalResponse(
+            goal_id=goal_id,
+            status=goal.status,
+            step_index=goal.step_index,
+            step=step,
+            reply=goal.last_reply,
+            error=goal.last_error,
+        )
+    finally:
+        db.close()
+
+
+@router.post("/{goal_id}/run", response_model=GoalResponse)
+async def run_goal(goal_id: int):
+    db: Session = SessionLocal()
+    try:
+        goal = db.query(Goal).filter(Goal.id == goal_id).first()
+        if not goal:
+            return GoalResponse(goal_id=goal_id, status="not_found")
+        goal.status = "running"
+        db.commit()
+        while goal.status == "running":
+            await _execute_step(goal, db)
+        return GoalResponse(
+            goal_id=goal_id,
+            status=goal.status,
+            step_index=goal.step_index,
+            reply=goal.last_reply,
+        )
+    finally:
+        db.close()
+
+
+@router.get("/{goal_id}", response_model=GoalResponse)
+async def get_goal(goal_id: int):
+    db: Session = SessionLocal()
+    try:
+        goal = db.query(Goal).filter(Goal.id == goal_id).first()
+        if not goal:
+            return GoalResponse(goal_id=goal_id, status="not_found")
+        steps = json.loads(goal.steps)
+        step = steps[goal.step_index - 1] if 0 < goal.step_index <= len(steps) else None
+        return GoalResponse(
+            goal_id=goal_id,
+            status=goal.status,
+            step_index=goal.step_index,
+            step=step,
+            reply=goal.last_reply,
+            error=goal.last_error,
         )
     finally:
         db.close()
@@ -609,6 +761,34 @@ allowed-tools: Bash(python*)
 # {project_slug}
 
 This skill is a stub. Replace this file with a real SKILL.md.
+"""
+
+
+def _harness_goal_loop_md() -> str:
+    return """# Hermes Goal Loop
+
+The generated backend ships an opinionated goal loop so Hermes (or any automation)
+can drive the agent through multiple steps without manual orchestration.
+
+## Endpoints
+- POST /goals -> create goal with ordered steps
+- POST /goals/{id}/next -> advance exactly one step
+- POST /goals/{id}/run -> loop until terminal state
+- GET /goals/{id} -> current state
+
+## Loop contract
+- status: pending -> running -> succeeded | failed
+- worker returns intermediate -> loop continues
+- worker returns succeeded/failed -> loop stops
+- no remaining steps after intermediate -> succeeded
+
+## How Hermes uses it
+1. POST /goals with the full step plan.
+2. POST /goals/{id}/run to let the supervisor execute every step autonomously.
+3. Poll GET /goals/{id} for terminal status and last_reply.
+
+This keeps Hermes from hand-holding each step while preserving a verifiable
+receipt per goal in the goals table.
 """
 
 
@@ -1013,6 +1193,7 @@ def generate(
     write("backend/app/routers/__init__.py", _backend_init())
     write("backend/app/routers/health.py", _backend_health_router())
     write("backend/app/routers/chat.py", _backend_chat_router())
+    write("backend/app/routers/goal.py", _backend_goal_router())
     write("backend/app/routers/__init__.py", _backend_init())
     write("backend/tests/__init__.py", "")
     write("backend/tests/test_health.py", _health_test())
@@ -1039,6 +1220,7 @@ def generate(
     write("harness/agents/orchestrator.md", _harness_agent_md("orchestrator"))
     write("harness/agents/worker.md", _harness_agent_md("worker"))
     write("harness/agents/qa-auditor.md", _harness_agent_md("qa-auditor"))
+    write("harness/patterns/goal-loop.md", _harness_goal_loop_md())
 
     if not skip_deps:
         _install_deps(project_dir, slug)
@@ -1096,7 +1278,22 @@ def test_runs_endpoints():
     body = r.json()
     assert "runs" in body
     assert isinstance(body["runs"], list)
+
+
+def test_goal_loop():
+    r = client.post(
+        "/goals",
+        json={"goal_text": "demo", "steps": [{"description": "step 1"}, {"description": "step 2"}]},
+    )
+    assert r.status_code == 200
+    goal_id = r.json()["goal_id"]
+    r2 = client.post(f"/goals/{goal_id}/run")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["status"] == "succeeded"
+    assert body["step_index"] == 2
 """
+
 
 
 # ---------------------------------------------------------------------------
