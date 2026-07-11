@@ -23,24 +23,30 @@ async def _supervisor(state: AgentState) -> AgentState:
 
 async def _worker(state: AgentState) -> AgentState:
     last = state.get("last_user_message", "")
-    if settings.LLM_API_KEY and settings.LLM_BASE_URL:
+    api_key = settings.resolved_api_key
+    if api_key:
         try:
             import httpx
 
+            base_url = settings.LLM_BASE_URL
+            model = settings.LLM_MODEL
+            # Gemini's OpenAI-compatible endpoint needs the model name without a prefix.
+            if settings.LLM_PROVIDER == "gemini" and not model.startswith("models/"):
+                model = model
             async with httpx.AsyncClient(timeout=30) as client:
                 payload = {
-                    "model": settings.LLM_MODEL,
+                    "model": model,
                     "messages": [
                         {"role": "system", "content": "You are a helpful assistant."},
                         {"role": "user", "content": last},
                     ],
                 }
                 headers = {
-                    "Authorization": f"Bearer {settings.LLM_API_KEY}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 }
                 resp = await client.post(
-                    f"{settings.LLM_BASE_URL.rstrip('/')}/v1/chat/completions",
+                    f"{base_url.rstrip('/')}/v1/chat/completions",
                     json=payload,
                     headers=headers,
                 )
