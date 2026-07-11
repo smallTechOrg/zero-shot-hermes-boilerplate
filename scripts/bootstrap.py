@@ -206,6 +206,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import health, chat
 from app.config import settings
 
+# Import db so dev-time create_all runs on startup/TestClient import.
+from app import db as _app_db  # noqa: F401
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="{{PROJECT_NAME}}")
@@ -273,6 +276,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
+
+
+# Lazy import avoids circular imports and guarantees models are registered
+# before create_all runs.
+def _init_models() -> None:
+    from app.models import Run  # noqa: F401
+    Base.metadata.create_all(bind=engine)
+
+
+_init_models()
 """
 
 
@@ -322,6 +335,7 @@ def _backend_chat_router() -> str:
     return """from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+import traceback
 
 from app.config import settings
 from app.agent import run_graph
@@ -364,9 +378,11 @@ async def chat(req: ChatRequest):
         run_id = run.id
     except Exception:
         db.rollback()
+        traceback.print_exc()
     finally:
         db.close()
     return ChatResponse(reply=reply or "Something went wrong.", run_id=run_id)
+
 
 
 class RunResponse(BaseModel):
@@ -1035,6 +1051,21 @@ def test_chat_stub():
     body = r.json()
     assert "reply" in body
     assert "hi" in body["reply"]
+
+
+def test_chat_creates_run():
+    r = client.post("/api/chat", json={"messages": [{"role": "user", "content": "save me"}]})
+    assert r.status_code == 200
+    run_id = r.json().get("run_id")
+    assert isinstance(run_id, int)
+
+
+def test_runs_endpoints():
+    r = client.get("/api/runs")
+    assert r.status_code == 200
+    body = r.json()
+    assert "runs" in body
+    assert isinstance(body["runs"], list)
 """
 
 
