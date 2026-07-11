@@ -1217,6 +1217,11 @@ def generate(
     write("frontend/public/.gitkeep", "")
 
     write(f"harness/skills/{slug}/SKILL.md", _harness_skill_md(slug))
+    write("deploy/README.md", _deploy_readme(slug))
+    write("deploy/Dockerfile", _deploy_dockerfile(slug))
+    write("deploy/gcp-vm-startup.sh", _deploy_startup(slug))
+    write("deploy/terraform/main.tf", _deploy_terraform(slug))
+    write("deploy/cloudbuild.yaml", _deploy_cloudbuild(slug))
     write("harness/agents/orchestrator.md", _harness_agent_md("orchestrator"))
     write("harness/agents/worker.md", _harness_agent_md("worker"))
     write("harness/agents/qa-auditor.md", _harness_agent_md("qa-auditor"))
@@ -1226,6 +1231,119 @@ def generate(
         _install_deps(project_dir, slug)
 
     return project_dir
+
+
+def _deploy_readme(slug: str) -> str:
+    return f"""# Deploy — {slug}
+
+One-command-ish path to a single GCP VM running the full stack.
+
+## What ships
+- `deploy/Dockerfile` — multi-stage backend image (serves API on :8000)
+- `deploy/gcp-vm-startup.sh` — boots the VM, installs Docker, runs compose
+- `deploy/terraform/main.tf` — e2e VM + firewall rule (Cloud SQL optional)
+- `deploy/cloudbuild.yaml` — builds + pushes image to Artifact Registry
+
+## Quick path (manual VM)
+1. `gcloud compute instances create {slug}-vm --machine-type=e2-small --metadata-from-file=startup-script=deploy/gcp-vm-startup.sh`
+2. `gcloud compute firewall-rules create allow-{slug}-8000 --allow tcp:8000 --target-tags={slug}`
+3. Open `http://<vm-ip>:8000/health`
+
+## Terraform
+```
+cd deploy/terraform
+terraform init && terraform apply -var project_id=<YOUR_GCP_PROJECT>
+```
+
+Secrets stay in `.env`; never commit. Set `DATABASE_URL` to Cloud SQL when used.
+"""
+
+
+def _deploy_dockerfile(slug: str) -> str:
+    return f"""# Multi-stage backend image for {slug}
+FROM python:3.11-slim AS build
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim
+WORKDIR /app
+COPY --from=build /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY backend/ ./
+ENV PORT=8000
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+"""
+
+
+def _deploy_startup(slug: str) -> str:
+    return f"""#!/usr/bin/env bash
+# GCP VM startup script for {slug}
+set -euo pipefail
+apt-get update && apt-get install -y docker.io docker-compose-plugin
+systemctl enable --now docker
+mkdir -p /opt/{slug}
+cat > /opt/{slug}/docker-compose.yml <<'YAML'
+services:
+  backend:
+    image: gcr.io/${{PROJECT_ID}}/{slug}-backend:latest
+    ports: ["8000:8000"]
+    env_file: .env
+YAML
+cd /opt/{slug} && docker compose up -d
+"""
+
+
+def _deploy_terraform(slug: str) -> str:
+    return f"""variable "project_id" {{ type = string }}
+variable "region" {{ default = "us-central1" }}
+
+provider "google" {{
+  project = var.project_id
+  region  = var.region
+}}
+
+resource "google_compute_instance" "{slug.replace('-', '_')}" {{
+  name         = "{slug}-vm"
+  machine_type = "e2-small"
+  zone         = "${{var.region}}-a"
+  tags         = ["{slug}"]
+
+  boot_disk {{
+    initialize_params {{
+      image = "debian-cloud/debian-12"
+    }}
+  }}
+
+  network_interface {{
+    network = "default"
+    access_config {{ }}
+  }}
+
+  metadata = {{
+    startup-script = file("${{path.module}}/../gcp-vm-startup.sh")
+  }}
+}}
+
+resource "google_compute_firewall" "allow_{slug.replace('-', '_')}_8000" {{
+  name    = "allow-{slug}-8000"
+  network = "default"
+  target_tags = ["{slug}"]
+  allow {{
+    protocol = "tcp"
+    ports    = ["8000"]
+  }}
+}}
+"""
+
+
+def _deploy_cloudbuild(slug: str) -> str:
+    return f"""steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "deploy/Dockerfile", "-t", "gcr.io/$PROJECT_ID/{slug}-backend:latest", "."]
+images:
+  - "gcr.io/$PROJECT_ID/{slug}-backend:latest"
+"""
 
 
 def _slug(name: str) -> str:
