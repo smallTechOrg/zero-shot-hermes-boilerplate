@@ -1,5 +1,5 @@
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "-f", "deploy/Dockerfile", "-t", "gcr.io/$PROJECT_ID/demo-agent-backend:latest", "."]
+    args: ["build", "-f", "deploy/Dockerfile", "-t", "us-central1-docker.pkg.dev/$PROJECT_ID/demo-agent/demo-agent-backend:latest", "."]
 images:
-  - "gcr.io/$PROJECT_ID/demo-agent-backend:latest"
+  - "us-central1-docker.pkg.dev/$PROJECT_ID/demo-agent/demo-agent-backend:latest"

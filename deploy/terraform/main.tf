@@ -36,4 +36,5 @@ resource "google_compute_firewall" "allow_demo_agent_8000" {
     protocol = "tcp"
     ports    = ["8000"]
   }
+  source_ranges = ["0.0.0.0/0"]
 }
