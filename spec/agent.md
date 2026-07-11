@@ -1,135 +1,88 @@
 # Agent — `scaffold-agent`
 
-> Phase 1 shipped the agent stub. Phase 2 replaces `/api/chat` with a compact multi-agent supervisor graph plus run persistence.
+> The agent graph shipped in `app/agent.py`. This describes the real implementation, not a planned one.
 
 ---
 
+## Chosen Graph
 
-
-**Chosen:** Multi-agent supervisor by default, with ReAct worker nodes, plus a lightweight goal loop for autonomous multi-step runs.
-
-## Goal Loop
-
-The generated harness supports optional goal-based looping so Hermes or similar automation can drive the agent through multiple steps without manual intervention.
-
-### State shape
-
-```python
-class GoalState(TypedDict):
-    goal_id: int
-    run_id: int
-    goal_text: str
-    status: str
-    step_index: int
-    steps: list[dict]
-    last_reply: str | None
-    last_error: str | None
-```
-
-Loop rules:
-- `pending` → `running` → `succeeded` / `failed`
-- A step may finish with `intermediate` to continue the loop
-- `next_step` advances once per successful iteration
-- Hard stop on `failed` or terminal `succeeded`
-
-### Endpoints
-
-- `POST /goals` create a goal with initial step list
-- `POST /goals/{goal_id}/next` advance one step
-- `POST /goals/{goal_id}/run` run loop until termination
-- `GET /goals/{goal_id}` current goal state
-
-### Persistence
-
-Goals and step receipts are stored in `app/models.py` and materialized by `app/db.py` on startup.
+A **hand-rolled supervisor/worker** graph (no LangGraph dependency). Lightweight goal loop for autonomous multi-step runs.
 
 ## Supervisor
 
-The backend emits a supervisor graph in `app/agent.py`:
-- START -> supervisor -> worker -> END
-- worker may return reply, error, or a follow-up step
+`app/agent.py` defines `run_graph(messages)` which runs three nodes in sequence:
 
-| Node | Provider | Model ID | Rationale |
-|-------|----------|----------|-----------|
-| agent_node | Optional | gpt-4o-mini or claude-haiku-3-5-20240307 | Live responses when `LLM_API_KEY` is set; otherwise degraded to stub path. |
+```
+START -> supervisor -> worker -> END
+                     |-> error -> handle_error -> END
+```
+
+| Node | Role |
+|------|------|
+| `_supervisor` | Sets default route/decision; records the last user message. |
+| `_worker` | If a key is configured, POSTs to the OpenAI-compatible `/v1/chat/completions` endpoint and stores the reply. Otherwise returns `[stub] <last user message>`. On exception, sets `state["error"]`. |
+| `_handle_error` | Terminates with a user-facing error message. |
+
+**Provider / model config** (from `app/config.py`):
+- `LLM_PROVIDER` — `gemini` (default) | `openai`.
+- `LLM_API_KEY` or `GEMINI_API_KEY` — enables live mode.
+- `LLM_BASE_URL` — OpenAI-compatible base URL (default Gemini OpenAI-compat endpoint).
+- `LLM_MODEL` — model id (default `gemini-1.5-flash`).
 
 **Fallback behaviour:**
-- Missing/invalid key → stub path. No retries, no delays.
-- Network failure → 500 with message "LLM call failed"; logged with traceback.
+- Missing/invalid key → `[stub]` path. No retries, no delays.
+- Network/API failure → `state["error"]` set; `handle_error` returns a message; the `Run` is persisted with `status=error`.
 
 **Prompt strategy:**
-- Phase 1: static prompt template `You are a helpful assistant.` with user message appended.
-- Phase 2: replace with system prompt from `prompts/transform.md` placeholder.
+- Phase 1: static system prompt `"You are a helpful assistant."` with the last user message appended. Replace in `app/agent.py` (`_worker`) to customize.
 
 ## Tools & Tool Calling
 
 | Tool name | Description | Inputs | Output | Side-effects |
 |-----------|-------------|--------|--------|--------------|
-| echo | Returns stub reply echoing user input. | messages | string | None |
-| llm_call | Calls configured OpenAI-compatible endpoint. | messages, model | string | Network call |
+| echo (stub) | Returns `[stub]` reply echoing user input. | messages | string | None |
+| llm_call | Calls the configured OpenAI-compatible endpoint. | messages, model | string | Network call |
 
-**Tool selection strategy:**
-- Phase 1: if `LLM_API_KEY` is set, always use `llm_call`.
-
-**Tool failure handling:**
-- On failure: raise 500 with "LLM call failed".
+**Tool selection:** if a live key is configured, always use `llm_call`; otherwise the stub.
 
 ## Agent State
 
 ```python
-class AgentState(TypedDict):
-    run_id: int                # set at entry
-    messages: list             # full conversation so far
-    reply: str | None          # final assistant message
-    error: str | None          # fatal error, if any
+class AgentState(dict):
+    run_id: int | None
+    messages: list[dict[str, str]]
+    reply: str | None
+    error: str | None
+    route: str          # default "worker"
+    decision: str       # default "answer"
+    reason: str
+    last_user_message: str
 ```
 
-## Nodes / Steps
+## Goal Loop
 
-### `agent_node`
+The goal loop drives `_execute_step` per step, calling `run_graph` on each step's `description`. State machine: `pending` → `running` → `succeeded` / `failed`. Endpoints: `POST /goals`, `POST /goals/{id}/next`, `POST /goals/{id}/run`, `GET /goals/{id}`. Goals and steps are stored in `app/models.py` (`Goal`) and materialized via `app/db.py`.
 
-**Reads from state:** `messages`
-**Writes to state:** `reply`, `error`
-**LLM call:** yes, if configured; uses a small static prompt.
-**External calls:** OpenAI-compatible or Anthropic-compatible client.
+## Capabilities
 
-**Behaviour:**
-- Build prompt from the last user message.
-- If a live provider is configured, return the model output.
-- Otherwise return a string prefixed with `[stub]` plus the user message.
-
-### `handle_error`
-
-**Reads from state:** `error`
-**Writes to state:** sets `reply` to an error string.
-**Behaviour:** terminate graph with "Something went wrong."
-
-## Graph / Flow Topology
-
-```text
-START -> supervisor -> worker -> END
-                   |-> reply -> END
-                   |-> error -> handle_error -> END
-```
-
-The backend now emits a supervisor graph in `app/graph.py`, a worker node in `app/nodes/*`, and a single entrypoint in `app/agent.py`. `/api/chat` invokes the graph and persists a `Run` record on completion or failure.
+`app/capabilities.py` loads every `capabilities/*.md` at startup into a `{slug: doc}` table, exposed via `GET /capabilities`. The supervisor can route a message to a named capability (extend `_supervisor`/`_worker` to branch on `capabilities/` content). See `capabilities/README.md` for the one-file-per-capability convention.
 
 ## Memory & Context
 
-- Within a run: full messages list in memory.
-- Across runs: none in Phase 1 (database receipt is optional).
+- Within a run: full `messages` list in memory.
+- Across runs: none in the base scaffold (database receipt is for observability only).
 
 ## Error Handling & Recovery
 
-- Node-level: try/except around LLM call; sets `error`.
-- Graph-level: `handle_error` node sets assistant-facing message and returns.
+- Node-level: `try/except` around the LLM call; sets `error`.
+- Graph-level: `handle_error` sets the assistant-facing message and returns.
 
 ## Observability
 
-- Structured log on every `/api/chat` request: `run_id`, `status`, `latency_ms`.
-- Errors logged with full traceback.
+- Every `/api/chat` persists a `Run` row (`status`, `user_message`, `assistant_message`, `error_message`).
+- `GET /api/runs` and `GET /api/runs/{id}` for inspection.
+- Errors logged to stderr with traceback in the chat router.
 
 ## Concurrency Model
 
-- One FastAPI worker per process; SQLite allows one writer at a time, which is sufficient for local dev.
-- Threaded `ProcessPoolExecutor` may be used for blocking LLM calls in production.
+- One FastAPI worker per process; SQLite allows one writer at a time, which is sufficient for local dev. For production, point `DATABASE_URL` at Postgres.

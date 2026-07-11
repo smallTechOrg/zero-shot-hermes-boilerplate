@@ -6,10 +6,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Build context is the repo root (see docker-compose.yml), so we copy backend/
+# and the repo-root capabilities/ directory explicitly.
+COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY backend/ ./
+COPY capabilities/ ./capabilities/
 
 EXPOSE 8000
 

@@ -1,5 +1,7 @@
 # Project Layout — Canonical Structure
 
+> **Scope:** This file is the canonical layout for **generated/extended projects** built *with* this kit (the target the `zero-shot-build` flow produces). The runnable scaffold you cloned — `backend/app/`, `frontend/`, `capabilities/` — is the *minimal baseline* this pattern describes; it uses a hand-rolled supervisor/worker graph (no LangGraph dependency) under `backend/app/` rather than `src/<package>/graph/`. Extend the baseline toward this layout as your agent grows. See `spec/architecture.md` for the actual shipped structure.
+
 All agents built from this boilerplate must follow this layout exactly. The sales-agent repo (`smallTechOrg/sales-agent`) is the canonical reference.
 
 ---

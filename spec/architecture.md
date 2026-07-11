@@ -1,103 +1,108 @@
 # Architecture — `scaffold-agent`
 
-> Single source of truth for Phase 1. Template source lives in `templates/; `scripts/bootstrap.py` is the generator.
+> Single source of truth for the runnable scaffold. This repo **is** the scaffold — there is no generator step; the code in `backend/` and `frontend/` runs as-is.
 
 ---
 
 ## System Overview
 
-This repo is both a **generator source** and a **spec harness**.
-`main` contains:
-- the canonical spec in `spec/`,
-- engineering rules in `harness/`,
-- a project-generation CLI in `scripts/`,
-- embedded project templates in `templates/`.
+This repo is a **runnable multi-agent hackathon starter-kit**. You clone it, install deps, and run it. No `bootstrap.py`, no `templates/` — the agent code lives directly in the repo. Copy `backend/`, `frontend/`, `deploy/`, `capabilities/` into a new repo and rename `demo-agent` → your project to reuse it as a boilerplate.
 
-A user runs `scripts/bootstrap.py <name>` (or wraps it via `scripts/new_agent.sh`) and a complete project tree is written to a fresh directory outside this repo.
-The generated project is a runnable FastAPI + React + SQLite service with an agent stub.
+The default agent is a minimal but real supervisor/worker graph:
+- **supervisor** decides routing,
+- **worker** calls the configured LLM (OpenAI-compatible endpoint) when a key is set, otherwise returns a `[stub]` reply,
+- **handle_error** terminates with a user-facing message on failure.
+
+The goal loop (`/goals`) lets automation drive the agent through multiple steps without manual intervention.
 
 ## Component Map
 
 ```
-templates/agent-project/   ← embedded source templates
-    │
-    ▼
-scripts/bootstrap.py       ← generator engine (read + substitute + write)
-    │
-    ▼
-<user-cwd>/<project-name>/ ← generated project (not in main)
-    ├── backend/
-    │     ├── main.py       ← FastAPI app
-    │     ├── db.py         ← SQLAlchemy engine/session
-    │     ├── models.py     ← ORM models
-    │     ├── alembic/      ← migrations
-    │     └── ...
-    ├── frontend/
-    │     ├── src/          ← Vite + React + TS
-    │     └── package.json
-    ├── docker-compose.yml
-    ├── Dockerfile.*
-    └── README.md
+repo root                          ← repo IS the agent project
+├── backend/                       ← FastAPI + SQLAlchemy + SQLite
+│   ├── app/
+│   │   ├── main.py                ← create_app() factory, CORS, routers
+│   │   ├── config.py              ← pydantic-settings; LLM provider/key/base_url/model
+│   │   ├── db.py                  ← engine + SessionLocal + Base; create_all on import
+│   │   ├── models.py              ← Run, Goal ORM models
+│   │   ├── agent.py               ← supervisor/worker/handle_error graph + run_graph()
+│   │   ├── capabilities.py        ← loads capabilities/*.md into a route table
+│   │   └── routers/
+│   │       ├── health.py          ← GET /health (DB-backed liveness)
+│   │       ├── chat.py            ← POST /api/chat, GET /api/runs, /api/runs/{id}
+│   │       └── goal.py            ← POST/GET /goals, /goals/{id}/run, /goals/{id}/next
+│   ├── alembic/                   ← migration tooling (env.py wires Base.metadata)
+│   ├── alembic.ini
+│   ├── tests/                     ← pytest unit tests (TestClient)
+│   ├── requirements.txt
+│   └── pyproject.toml
+├── frontend/                      ← React 18 + Vite 5 + TypeScript + Tailwind
+│   ├── src/App.tsx                ← chat UI; calls /api/chat via fetch
+│   └── package.json
+├── capabilities/                  ← one .md file per capability (loaded at runtime)
+├── deploy/                        ← GCP VM path: Dockerfile, startup script, terraform, cloudbuild
+├── evals/                         ← behaviour evals (stub) + 1 live-gated test
+├── harness/                       ← Hermes-native skill/agent/pattern stubs (methodology)
+├── spec/                          ← this spec (single source of truth)
+├── docker-compose.yml             ← backend :8000 + frontend :5173
+├── Dockerfile.backend             ← used by compose
+└── README.md
 ```
 
 ## Layers
 
 | Layer | Responsibility |
 |-------|----------------|
-| Generator | `bootstrap.py` reads `templates/`, substitutes tags, writes to `PROJECT_ROOT`. |
-| API | FastAPI routers expose `/health` and `/api/chat`; optional `/api/runs` for trace storage in dev. |
-| Agent Stub | A single node that returns a canned reply or forwards to an LLM if a key is present. |
-| Data | SQLAlchemy 2 core + Alembic. SQLite in dev; swap to Postgres via DATABASE_URL without code changes. |
-| Frontend | Vite + React + TypeScript. Calls `/api/chat` with fetch. |
+| API | FastAPI routers expose `/health`, `/api/chat`, `/api/runs`, and the `/goals` loop. |
+| Agent | `app/agent.py` supervisor→worker graph; live LLM when a key is present, else `[stub]`. |
+| Capabilities | `capabilities/*.md` describe discrete capabilities; the supervisor can route by name. |
+| Data | SQLAlchemy 2.0 core + SQLite in dev. Swap to Postgres via `DATABASE_URL` (no code change needed for the ORM). |
+| Frontend | Vite + React + TypeScript. Calls `/api/chat` with `fetch`. |
 | Ops | Docker Compose binds backend `:8000` and frontend dev server `:5173`. |
 
 ## Data Flow
 
 1. User POSTs `{messages:[...]}` to `/api/chat`.
-2. FastAPI validates with Pydantic (optional; MVP passes through).
-3. Agent stub builds a prompt, checks `LLM_API_KEY` in env.
-   - Key present: calls OpenAI-compatible or Anthropic-compatible endpoint.
-   - No key: returns stub response with the user message echoed back with a canned prefix.
-4. Response is returned as `{"reply": "..."}`.
+2. FastAPI validates with Pydantic (`ChatRequest`).
+3. `run_graph()` runs the supervisor, then the worker:
+   - Key present (`LLM_API_KEY` or provider key): POSTs to the configured OpenAI-compatible `/v1/chat/completions` endpoint.
+   - No key: returns a `[stub]` reply echoing the user message.
+4. Response returned as `{"reply": "...", "run_id": N}`; a `Run` row is persisted.
 5. Frontend appends user bubble and assistant bubble.
 
 ## External Dependencies
 
 | Dependency | Purpose | Failure Mode |
 |------------|---------|--------------|
-| OpenAI/Anthropic API | Live agent responses (optional) | Stub path is used automatically; service remains up. |
-| Docker | Local dev via Compose | User can run backend/frontend manually with `npm run dev` + `uvicorn`. |
-| npm | Frontend build | Fails clearly with `npm install` error. |
-| uv / pip | Python deps | Fails clearly at install step. |
+| LLM API (OpenAI-compatible) | Live agent responses (optional) | Stub path used automatically; service stays up. |
+| Docker | Local dev via Compose | Run backend/frontend manually: `uvicorn` + `npm run dev`. |
+| npm | Frontend build | Fails clearly at `npm install`. |
+| pip / venv | Python deps | Fails clearly at install step. |
 
 ## Stack
 
-- **Agent framework:** LangGraph-compatible supervisor graph (minimal in Phase 1; extensible to multi-worker, planning, reflection)
-- **LLM provider + model:** Anthropic / `claude-sonnet-4-6` default; Gemini / `gemini-3.1-pro` alternative; OpenRouter fallback
-- **Backend:** FastAPI + Uvicorn
-- **Database + ORM:** PostgreSQL + SQLAlchemy 2.0 / Alembic in prod; SQLite in dev via DATABASE_URL switch
-- **Frontend:** React 18 + Vite 6 + TypeScript + Tailwind in `web/`; optional Expo app in `mobile/`
-- **Packaging:** `pyproject.toml` + venv in backend; `package.json` in frontends
-- **Agent harness:** each generated project includes `harness/skills/<slug>/SKILL.md` plus `harness/agents/*.md` stubs for orchestrator, worker, and qa patterns
-- **Protocol surfaces:** MCP server stub and A2A message channel stubs in generated backend
+- **Agent framework:** hand-rolled supervisor/worker graph (no LangGraph/CrewAI/AutoGen dependency — keeps the install surface small). Extensible to multi-worker, planning, reflection.
+- **LLM provider + model:** configurable via `LLM_PROVIDER` (`gemini` | `openai`), `LLM_API_KEY` / `GEMINI_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`. Default: Gemini `gemini-1.5-flash` via the OpenAI-compatible endpoint.
+- **Backend:** FastAPI + Uvicorn + SQLAlchemy 2.0 + Alembic.
+- **Database:** SQLite in dev (`DATABASE_URL`); Postgres-ready via the same `DATABASE_URL` switch (no code change for the ORM).
+- **Frontend:** React 18 + Vite 5 + TypeScript + Tailwind `frontend/` (not `web/`).
+- **Packaging:** `requirements.txt` + venv in `backend/`; `package.json` in `frontend/`.
+- **Agent harness:** `harness/skills/<slug>/SKILL.md` + `harness/agents/*.md` stubs for orchestrator/worker/qa patterns (methodology, not required to run the scaffold).
+- **Protocol surfaces:** not included in the base scaffold (add MCP/A2A when your agent needs them).
 
 | Key library | Version | Purpose |
 |-------------|---------|---------|
-| fastapi | latest | API |
-| uvicorn[standard] | latest | ASGI server |
-| sqlalchemy | 2.x | ORM |
-| alembic | latest | Migrations |
+| fastapi | >=0.111 | API |
+| uvicorn[standard] | >=0.30 | ASGI server |
+| sqlalchemy | >=2.0 | ORM |
+| alembic | >=1.13 | Migrations |
+| pydantic-settings | >=2.4 | Config |
+| httpx | >=0.27 | LLM calls |
 | react | 18 | Frontend UI |
-| vite | 6 | Frontend tooling |
-| axios or fetch | — | HTTP from frontend |
-
-**Avoid:**
-- LangGraph / CrewAI / AutoGen in the base template (Phase 1 stub keeps dependency surface small).
-- SQLAlchemy 1.x (ver 2 only).
-- TypeScript generation beyond the template (no transpile-from-JS).
+| vite | 5 | Frontend tooling |
 
 ## Deployment Model
 
-- **Local dev:** `docker compose up` binds `:8000` and `:5173`.
-- **GCP VM:** deploy with two containers on Cloud Run or a single GCE VM running Docker + Compose.
-- **Migration:** `alembic upgrade head` runs as an init container or pre-start command in the backend Dockerfile.
+- **Local dev:** `docker compose up --build` binds `:8000` and `:5173`. Or run manually: `uvicorn app.main:app --port 8000` + `npm run dev`.
+- **GCP VM:** `deploy/` has a multi-stage `Dockerfile`, `gcp-vm-startup.sh`, `terraform/main.tf`, and `cloudbuild.yaml`. Single VM runs the backend image; the frontend is served via the dev server or built statically.
+- **Migration:** tables are created via `Base.metadata.create_all` on import (dev). For prod use Alembic: `alembic upgrade head`.

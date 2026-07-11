@@ -8,6 +8,7 @@ FROM python:3.11-slim
 WORKDIR /app
 COPY --from=build /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY backend/ ./
+COPY capabilities/ ./capabilities/
 ENV PORT=8000
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
