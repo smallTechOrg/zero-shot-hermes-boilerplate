@@ -72,27 +72,26 @@ This repo gives you a **single command scaffold** that drops a runnable agent sc
   7. `docker compose down`
   8. `cd frontend && npm install && npm run build` must pass.
 
-### Phase 2 — Agent Slot + Persistence (in progress)
+### Phase 2 — Agent Slot + Persistence (shipped)
 
-- **Goal:** Replace the Phase-1 agent stub with a compact supervisor/worker graph and add lightweight run persistence surface in generated projects.
-- **Dependencies:** Phase 1 complete.
-- **Gate command:** `uv run pytest tests/test_chat.py -v` in a generated backend.
+- **Goal:** Replace the Phase-1 agent stub with a compact supervisor/worker graph, lightweight run persistence, and a Hermes goal loop.
 - **Shipped slices:**
-  - `slice-agent-graph` (backend) — `app/agent.py` emits `run_graph(messages)` with `supervisor -> worker` flow; optional live LLM call when env is set, else `[stub]`.
-  - `slice-persistence` (backend) — `app/models.py` and `app/db.py` add `Run` table; `/api/chat` writes a run receipt and returns `run_id`.
-  - `slice-runs-api` (backend) — `/api/runs` and `/api/runs/{run_id}` for debug/observability.
-  - `slice-generated-tests` (backend) — generated `tests/test_chat.py` covers stub response, `run_id` creation, and runs endpoints.
-- **How to test:**
-  1. `python3 scripts/bootstrap.py my-project`
-  2. `cd my-project/backend && .venv/bin/python -m pytest tests/test_chat.py -v`
+  - `slice-agent-graph` — `app/agent.py` supervisor→worker flow; live LLM when env set, else `[stub]`.
+  - `slice-persistence` — `Run` table; `/api/chat` writes a run receipt + `run_id`.
+  - `slice-runs-api` — `/api/runs`, `/api/runs/{run_id}`.
+  - `slice-goal-loop` — `Goal` table + `/goals`, `/goals/{id}/run`, `/goals/{id}/next`, `/goals/{id}`; `harness/patterns/goal-loop.md`.
+  - `slice-generated-tests` — `tests/test_chat.py` covers stub, run_id, runs, goal loop.
 
-### Phase 3 — Deploy Template (future)
+### Phase 3 — Deploy Template (shipped)
 
-- **Goal:** Add a `terraform/` or deployment manifest for a single GCP VM + Cloud SQL.
-- **Dependencies:** Phase 2.
-- **Gate command:** `cd deploy && terraform plan` (or documented equivalent).
+- **Shipped slices:**
+  - `slice-deploy-dockerfile` — `deploy/Dockerfile` multi-stage backend image.
+  - `slice-deploy-gcp` — `deploy/gcp-vm-startup.sh`, `deploy/terraform/main.tf`, `deploy/cloudbuild.yaml`, `deploy/README.md`.
 
-### Phase 4 — Capability Plugin (future)
+### Phase 4 — Capability Plugin (shipped)
+
+- **Shipped slices:**
+  - `slice-capability-stub` — `capabilities/README.md` + `capabilities/example.md` describing the one-file-per-capability convention the supervisor can route to.
 
 - **Goal:** Allow `--slot transform_text` or other capability names to swap the stub graph node and prompt template.
 - **Dependencies:** Phase 2.

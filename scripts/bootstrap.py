@@ -1222,6 +1222,8 @@ def generate(
     write("deploy/gcp-vm-startup.sh", _deploy_startup(slug))
     write("deploy/terraform/main.tf", _deploy_terraform(slug))
     write("deploy/cloudbuild.yaml", _deploy_cloudbuild(slug))
+    write("capabilities/README.md", _capability_readme(slug))
+    write("capabilities/example.md", _capability_example())
     write("harness/agents/orchestrator.md", _harness_agent_md("orchestrator"))
     write("harness/agents/worker.md", _harness_agent_md("worker"))
     write("harness/agents/qa-auditor.md", _harness_agent_md("qa-auditor"))
@@ -1343,6 +1345,37 @@ def _deploy_cloudbuild(slug: str) -> str:
     args: ["build", "-f", "deploy/Dockerfile", "-t", "gcr.io/$PROJECT_ID/{slug}-backend:latest", "."]
 images:
   - "gcr.io/$PROJECT_ID/{slug}-backend:latest"
+"""
+
+
+def _capability_readme(slug: str) -> str:
+    return f"""# Capabilities — {slug}
+
+Drop one file per discrete capability here. Each file describes exactly one thing
+the agent can do. The supervisor graph can route to a capability by name; see
+`capabilities/example.md` for the shape.
+
+Convention:
+- filename = `{{capability-slug}}.md`
+- first H1 = capability name
+- sections: Purpose, Inputs, Output, Side-effects
+"""
+
+
+def _capability_example() -> str:
+    return """# example-capability
+
+## Purpose
+Show the minimal capability shape the supervisor can load.
+
+## Inputs
+- messages: list of {{role, content}}
+
+## Output
+- reply: string
+
+## Side-effects
+- none (stub)
 """
 
 
