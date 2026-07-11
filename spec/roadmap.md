@@ -72,11 +72,19 @@ This repo gives you a **single command scaffold** that drops a runnable agent sc
   7. `docker compose down`
   8. `cd frontend && npm install && npm run build` must pass.
 
-### Phase 2 — Agent Slot (future)
+### Phase 2 — Agent Slot + Persistence (in progress)
 
-- **Goal:** Wire the Phase-1 agent stub into a real LangGraph graph using pytest against a real API key.
+- **Goal:** Replace the Phase-1 agent stub with a compact supervisor/worker graph and add lightweight run persistence surface in generated projects.
 - **Dependencies:** Phase 1 complete.
-- **Gate command:** `uv run pytest tests/integration/ -v` with `ANTHROPIC_API_KEY` in `.env`.
+- **Gate command:** `uv run pytest tests/test_chat.py -v` in a generated backend.
+- **Shipped slices:**
+  - `slice-agent-graph` (backend) — `app/agent.py` emits `run_graph(messages)` with `supervisor -> worker` flow; optional live LLM call when env is set, else `[stub]`.
+  - `slice-persistence` (backend) — `app/models.py` and `app/db.py` add `Run` table; `/api/chat` writes a run receipt and returns `run_id`.
+  - `slice-runs-api` (backend) — `/api/runs` and `/api/runs/{run_id}` for debug/observability.
+  - `slice-generated-tests` (backend) — generated `tests/test_chat.py` covers stub response, `run_id` creation, and runs endpoints.
+- **How to test:**
+  1. `python3 scripts/bootstrap.py my-project`
+  2. `cd my-project/backend && .venv/bin/python -m pytest tests/test_chat.py -v`
 
 ### Phase 3 — Deploy Template (future)
 
