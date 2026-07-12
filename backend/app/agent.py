@@ -30,9 +30,12 @@ async def _worker(state: AgentState) -> AgentState:
 
             base_url = settings.LLM_BASE_URL
             model = settings.LLM_MODEL
-            # Gemini's OpenAI-compatible endpoint needs the model name without a prefix.
-            if settings.LLM_PROVIDER == "gemini" and not model.startswith("models/"):
-                model = model
+            # Gemini's OpenAI-compatible endpoint is `<base>/chat/completions`
+            # (base already ends in /openai). Standard OpenAI is `<base>/v1/chat/completions`.
+            if settings.LLM_PROVIDER == "gemini":
+                endpoint = f"{base_url.rstrip('/')}/chat/completions"
+            else:
+                endpoint = f"{base_url.rstrip('/')}/v1/chat/completions"
             async with httpx.AsyncClient(timeout=30) as client:
                 payload = {
                     "model": model,
@@ -46,7 +49,7 @@ async def _worker(state: AgentState) -> AgentState:
                     "Content-Type": "application/json",
                 }
                 resp = await client.post(
-                    f"{base_url.rstrip('/')}/v1/chat/completions",
+                    endpoint,
                     json=payload,
                     headers=headers,
                 )

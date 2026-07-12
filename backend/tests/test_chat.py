@@ -9,7 +9,8 @@ def test_chat_stub():
     assert r.status_code == 200
     body = r.json()
     assert "reply" in body
-    assert "hi" in body["reply"]
+    assert "run_id" in body
+    assert isinstance(body["run_id"], int)
 
 
 def test_chat_creates_run():

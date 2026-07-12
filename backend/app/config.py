@@ -2,7 +2,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="allow")
+    # Candidate .env locations, tried in order. Covers running from the repo
+    # root (./.env) and from backend/ (../.env). Deployed images inject vars
+    # directly via env_file / the VM, so this only affects local dev.
+    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="allow")
 
     PROJECT_NAME: str = "demo-agent"
     DATABASE_URL: str = "sqlite:///./data/app.db"
@@ -13,7 +16,7 @@ class Settings(BaseSettings):
     LLM_API_KEY: str | None = None
     GEMINI_API_KEY: str | None = None
     LLM_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai"
-    LLM_MODEL: str = "gemini-1.5-flash"
+    LLM_MODEL: str = "gemini-2.5-flash"
 
     @property
     def resolved_api_key(self) -> str | None:
